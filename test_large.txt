@@ -1,0 +1,15 @@
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+This is a test file with lots of repetition to demonstrate compression.
+This is a test file with lots of repetition to demonstrate compression.
+This is a test file with lots of repetition to demonstrate compression.
+This is a test file with lots of repetition to demonstrate compression.
+The quick brown fox jumps over the lazy dog again and again and again.
+The quick brown fox jumps over the lazy dog again and again and again.
+The quick brown fox jumps over the lazy dog again and again and again.
+Data compression works best with repetitive patterns and larger file sizes.
+Data compression works best with repetitive patterns and larger file sizes.
+Data compression works best with repetitive patterns and larger file sizes.

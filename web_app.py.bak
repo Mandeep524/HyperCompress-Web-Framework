@@ -1,0 +1,1561 @@
+"""
+Enhanced Web Interface with Separate Pages for Each File Type
+Run with: python web_app.py
+Then open: http://localhost:8080
+"""
+
+from flask import Flask, render_template, request, jsonify, send_file, render_template_string
+import sys
+import os
+import time
+import io
+from pathlib import Path
+from werkzeug.utils import secure_filename
+import base64
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from algorithms import rle, huffman, lzw
+from handlers import image_handler, video_handler, document_handler
+import numpy as np
+from PIL import Image
+
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max
+app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+app.config['COMPRESSED_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'compressed')
+app.config['SECRET_KEY'] = 'compression_project_2025'
+
+# Create directories
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['COMPRESSED_FOLDER'], exist_ok=True)
+
+# Allowed file extensions
+ALLOWED_IMAGES = {'png', 'jpg', 'jpeg', 'bmp', 'gif'}
+ALLOWED_VIDEOS = {'mp4', 'avi', 'mov'}
+ALLOWED_DOCS = {'txt', 'pdf', 'docx', 'csv'}
+
+def allowed_file(filename, allowed_extensions):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
+
+HTML_BASE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Compression - {title}</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        
+        .navbar {
+            background: rgba(0,0,0,0.2);
+            backdrop-filter: blur(10px);
+            padding: 15px 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .nav-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .nav-brand {
+            color: white;
+            font-size: 1.5em;
+            font-weight: bold;
+            text-decoration: none;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            list-style: none;
+        }
+        
+        .nav-links a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+        
+        .nav-links a:hover, .nav-links a.active {
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 30px auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            background: #f8f9fa;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+        }
+        
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f0f0;
+        }
+        
+        .upload-area.drag-over {
+            background: #e8eaf6;
+            border-color: #3f51b5;
+        }
+        
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1.1em;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            margin: 10px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .options {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .option-group {
+            margin-bottom: 15px;
+        }
+        
+        .option-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .algorithm-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+        }
+        
+        .algo-option {
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+        }
+        
+        .algo-option:hover {
+            border-color: #667eea;
+            background: #f0f0f0;
+        }
+        
+        .algo-option.selected {
+            border-color: #667eea;
+            background: #e8eaf6;
+        }
+        
+        .algo-option input {
+            margin-right: 8px;
+        }
+        
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 30px;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        #results {
+            display: none;
+            margin-top: 30px;
+        }
+        
+        .result-card {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-left: 5px solid #667eea;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .result-header {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+        
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        
+        .result-item {
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        
+        .result-label {
+            font-size: 0.9em;
+            color: #666;
+            display: block;
+            margin-bottom: 5px;
+        }
+        
+        .result-value {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .success {
+            color: #28a745;
+        }
+        
+        .warning {
+            color: #dc3545;
+        }
+        
+        .download-btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
+        }
+        
+        .download-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.5);
+        }
+        
+        .summary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        
+        .file-info {
+            background: #e8f4f8;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #17a2b8;
+        }
+        
+        .file-info-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+        }
+        
+        .checkbox-group {
+            margin: 15px 0;
+        }
+        
+        .checkbox-group label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .checkbox-group input {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="nav-brand">🗜️ Data Compression</a>
+            <ul class="nav-links">
+                <li><a href="/" class="{home_active}">🏠 Home</a></li>
+                <li><a href="/images" class="{images_active}">🖼️ Images</a></li>
+                <li><a href="/videos" class="{videos_active}">🎥 Videos</a></li>
+                <li><a href="/documents" class="{docs_active}">📄 Documents</a></li>
+                <li><a href="/text" class="{text_active}">📝 Text</a></li>
+            </ul>
+        </div>
+    </nav>
+    
+    {content}
+    
+    <script>
+        function selectAlgorithm(value) {
+            document.querySelectorAll('.algo-option').forEach(opt => {
+                opt.classList.remove('selected');
+            });
+            event.currentTarget.classList.add('selected');
+            document.getElementById('algorithm').value = value;
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+        
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            let html = '<h2 style="margin-bottom: 20px;">📊 Compression Results</h2>';
+            
+            if (data.filename) {
+                html += `
+                    <div class="file-info">
+                        <h3>📁 File Information</h3>
+                        <div class="file-info-item">
+                            <span>Filename:</span>
+                            <strong>${data.filename}</strong>
+                        </div>
+                        <div class="file-info-item">
+                            <span>Type:</span>
+                            <strong>${data.file_type}</strong>
+                        </div>
+                        <div style="margin-top: 15px; text-align: center;">
+                            ${data.original_file ? `
+                            <a href="/download/${data.original_file}" class="download-btn" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); margin: 5px;">
+                                📥 Original Image
+                            </a>
+                            ` : ''}
+                            ${data.grayscale_file ? `
+                            <a href="/download/${data.grayscale_file}" class="download-btn" style="background: linear-gradient(135deg, #8e9eab 0%, #505765 100%); margin: 5px;">
+                                🖼️ Grayscale Version
+                            </a>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            data.results.forEach(result => {
+                const savingClass = result.space_saving >= 0 ? 'success' : 'warning';
+                const savingText = result.space_saving >= 0 
+                    ? `${result.space_saving.toFixed(2)}% Saved` 
+                    : `${Math.abs(result.space_saving).toFixed(2)}% Expanded`;
+                
+                html += `
+                    <div class="result-card">
+                        <div class="result-header">${result.algorithm}</div>
+                        <div class="result-grid">
+                            <div class="result-item">
+                                <span class="result-label">Original Size</span>
+                                <span class="result-value">${formatBytes(result.original_size)}</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">Compressed Size</span>
+                                <span class="result-value">${formatBytes(result.compressed_size)}</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">Compression Ratio</span>
+                                <span class="result-value">${result.compression_ratio.toFixed(4)}</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">Space Savings</span>
+                                <span class="result-value ${savingClass}">${savingText}</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">Compression Time</span>
+                                <span class="result-value">${result.compression_time.toFixed(6)}s</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">Verification</span>
+                                <span class="result-value ${result.verified ? 'success' : 'warning'}">
+                                    ${result.verified ? '✓ PASSED' : '✗ FAILED'}
+                                </span>
+                            </div>
+                        </div>
+                        ${result.download_file || result.binary_file ? `
+                        <div style="margin-top: 15px; text-align: center;">
+                            ${result.download_file ? `
+                            <a href="/download/${result.download_file}" class="download-btn" style="margin: 5px;">
+                                �️ View Decompressed (BMP)
+                            </a>
+                            ` : ''}
+                            ${result.binary_file ? `
+                            <a href="/download/${result.binary_file}" class="download-btn" style="margin: 5px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                                💾 Download Compressed Binary
+                            </a>
+                            ` : ''}
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+            });
+            
+            if (data.summary) {
+                html += `
+                    <div class="summary">
+                        <h3>🏆 Best Performers</h3>
+                        ${data.summary.best_compression ? 
+                            `<p>📦 Best Compression: <strong>${data.summary.best_compression.name}</strong> (${data.summary.best_compression.saving.toFixed(2)}% saved)</p>` : ''}
+                        ${data.summary.fastest_comp ? 
+                            `<p>⚡ Fastest Compression: <strong>${data.summary.fastest_comp.name}</strong> (${data.summary.fastest_comp.time.toFixed(6)}s)</p>` : ''}
+                    </div>
+                `;
+            }
+            
+            resultsDiv.innerHTML = html;
+            resultsDiv.style.display = 'block';
+            resultsDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+    </script>
+</body>
+</html>
+"""
+
+HOME_PAGE = """
+<div class="container">
+    <div class="header">
+        <h1>🗜️ Data Compression Project</h1>
+        <p>Compress Images, Videos, Documents, and Text using RLE, Huffman, and LZW algorithms</p>
+    </div>
+    
+    <div class="content">
+        <h2>Select a Compression Type</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 30px;">
+            <a href="/images" style="text-decoration: none;">
+                <div class="result-card" style="text-align: center; cursor: pointer; transition: transform 0.3s;">
+                    <div style="font-size: 4em;">🖼️</div>
+                    <h3>Image Compression</h3>
+                    <p>Compress PNG, JPG, BMP, GIF files</p>
+                </div>
+            </a>
+            
+            <a href="/videos" style="text-decoration: none;">
+                <div class="result-card" style="text-align: center; cursor: pointer; transition: transform 0.3s;">
+                    <div style="font-size: 4em;">🎥</div>
+                    <h3>Video Compression</h3>
+                    <p>Compress MP4, AVI, MOV files</p>
+                </div>
+            </a>
+            
+            <a href="/documents" style="text-decoration: none;">
+                <div class="result-card" style="text-align: center; cursor: pointer; transition: transform 0.3s;">
+                    <div style="font-size: 4em;">📄</div>
+                    <h3>Document Compression</h3>
+                    <p>Compress TXT, PDF, DOCX, CSV files</p>
+                </div>
+            </a>
+            
+            <a href="/text" style="text-decoration: none;">
+                <div class="result-card" style="text-align: center; cursor: pointer; transition: transform 0.3s;">
+                    <div style="font-size: 4em;">📝</div>
+                    <h3>Text Compression</h3>
+                    <p>Compress raw text directly</p>
+                </div>
+            </a>
+        </div>
+        
+        <div style="margin-top: 40px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+            <h3>📊 Available Algorithms</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+                <div>
+                    <h4>RLE (Run Length Encoding)</h4>
+                    <p>Best for highly repetitive data</p>
+                </div>
+                <div>
+                    <h4>Huffman Coding</h4>
+                    <p>Best for data with frequency variations</p>
+                </div>
+                <div>
+                    <h4>LZW (Lempel-Ziv-Welch)</h4>
+                    <p>Best for text with repeated patterns</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+"""
+
+IMAGE_PAGE = """
+<div class="container">
+    <div class="header">
+        <h1>🖼️ Image Compression</h1>
+        <p>Compress PNG, JPG, JPEG, BMP, GIF images</p>
+    </div>
+    
+    <div class="content">
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="upload-area" id="dropArea">
+                <div class="upload-icon">📤</div>
+                <h3>Drop your image here or click to browse</h3>
+                <p style="color: #666; margin-top: 10px;">Supported formats: PNG, JPG, JPEG, BMP, GIF</p>
+                <input type="file" id="fileInput" name="file" class="file-input" accept=".png,.jpg,.jpeg,.bmp,.gif" required>
+                <button type="button" class="btn" onclick="document.getElementById('fileInput').click()">
+                    Choose Image File
+                </button>
+                <div id="fileInfo" style="margin-top: 15px; display: none;"></div>
+            </div>
+            
+            <div class="options">
+                <div class="option-group">
+                    <label>Select Compression Algorithm</label>
+                    <input type="hidden" id="algorithm" name="algorithm" value="all">
+                    <div class="algorithm-grid">
+                        <div class="algo-option selected" onclick="selectAlgorithm('all')">
+                            <input type="radio" name="algo_radio" value="all" checked> All
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('rle')">
+                            <input type="radio" name="algo_radio" value="rle"> RLE
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('huffman')">
+                            <input type="radio" name="algo_radio" value="huffman"> Huffman
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('lzw')">
+                            <input type="radio" name="algo_radio" value="lzw"> LZW
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="checkbox-group">
+                    <label>
+                        <input type="checkbox" id="grayscale" name="grayscale" checked>
+                        Convert to Grayscale (Better compression)
+                    </label>
+                </div>
+            </div>
+            
+            <div style="text-align: center;">
+                <button type="submit" class="btn">🗜️ Compress Image</button>
+                <button type="button" class="btn btn-secondary" onclick="resetForm()">🗑️ Clear</button>
+            </div>
+        </form>
+        
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Compressing image...</p>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+</div>
+
+<script>
+    const dropArea = document.getElementById('dropArea');
+    const fileInput = document.getElementById('fileInput');
+    const uploadForm = document.getElementById('uploadForm');
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, preventDefaults, false);
+    });
+    
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+    
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.add('drag-over'), false);
+    });
+    
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.remove('drag-over'), false);
+    });
+    
+    dropArea.addEventListener('drop', handleDrop, false);
+    
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        fileInput.files = files;
+        showFileInfo(files[0]);
+    }
+    
+    fileInput.addEventListener('change', function() {
+        if (this.files.length > 0) {
+            showFileInfo(this.files[0]);
+        }
+    });
+    
+    function showFileInfo(file) {
+        const fileInfo = document.getElementById('fileInfo');
+        fileInfo.innerHTML = `
+            <strong>Selected:</strong> ${file.name}<br>
+            <strong>Size:</strong> ${formatBytes(file.size)}<br>
+            <strong>Type:</strong> ${file.type}
+        `;
+        fileInfo.style.display = 'block';
+    }
+    
+    uploadForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(uploadForm);
+        formData.set('grayscale', document.getElementById('grayscale').checked);
+        
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('results').style.display = 'none';
+        
+        try {
+            const response = await fetch('/compress_image', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.error) {
+                alert('Error: ' + data.error);
+            } else {
+                displayResults(data);
+            }
+        } catch (error) {
+            alert('Error: ' + error.message);
+        } finally {
+            document.getElementById('loading').style.display = 'none';
+        }
+    });
+    
+    function resetForm() {
+        uploadForm.reset();
+        document.getElementById('fileInfo').style.display = 'none';
+        document.getElementById('results').style.display = 'none';
+        document.querySelectorAll('.algo-option').forEach((opt, i) => {
+            opt.classList.toggle('selected', i === 0);
+        });
+    }
+</script>
+"""
+
+VIDEO_PAGE = """
+<div class="container">
+    <div class="header">
+        <h1>🎥 Video Compression</h1>
+        <p>Compress MP4, AVI, MOV video files</p>
+    </div>
+    
+    <div class="content">
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="upload-area" id="dropArea">
+                <div class="upload-icon">📤</div>
+                <h3>Drop your video here or click to browse</h3>
+                <p style="color: #666; margin-top: 10px;">Supported formats: MP4, AVI, MOV</p>
+                <p style="color: #999; font-size: 0.9em;">Note: Processes first 10 frames for analysis</p>
+                <input type="file" id="fileInput" name="file" class="file-input" accept=".mp4,.avi,.mov" required>
+                <button type="button" class="btn" onclick="document.getElementById('fileInput').click()">
+                    Choose Video File
+                </button>
+                <div id="fileInfo" style="margin-top: 15px; display: none;"></div>
+            </div>
+            
+            <div class="options">
+                <div class="option-group">
+                    <label>Select Compression Algorithm</label>
+                    <input type="hidden" id="algorithm" name="algorithm" value="all">
+                    <div class="algorithm-grid">
+                        <div class="algo-option selected" onclick="selectAlgorithm('all')">
+                            <input type="radio" name="algo_radio" value="all" checked> All
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('rle')">
+                            <input type="radio" name="algo_radio" value="rle"> RLE
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('huffman')">
+                            <input type="radio" name="algo_radio" value="huffman"> Huffman
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('lzw')">
+                            <input type="radio" name="algo_radio" value="lzw"> LZW
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="option-group">
+                    <label for="maxFrames">Maximum Frames to Process</label>
+                    <input type="number" id="maxFrames" name="max_frames" value="10" min="1" max="100" 
+                           style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                </div>
+                
+                <div class="checkbox-group">
+                    <label>
+                        <input type="checkbox" id="grayscale" name="grayscale" checked>
+                        Convert to Grayscale (Better compression)
+                    </label>
+                </div>
+            </div>
+            
+            <div style="text-align: center;">
+                <button type="submit" class="btn">🗜️ Compress Video</button>
+                <button type="button" class="btn btn-secondary" onclick="resetForm()">🗑️ Clear</button>
+            </div>
+        </form>
+        
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Processing video frames and compressing...</p>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+</div>
+
+<script>
+    const dropArea = document.getElementById('dropArea');
+    const fileInput = document.getElementById('fileInput');
+    const uploadForm = document.getElementById('uploadForm');
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, preventDefaults, false);
+    });
+    
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+    
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.add('drag-over'), false);
+    });
+    
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.remove('drag-over'), false);
+    });
+    
+    dropArea.addEventListener('drop', handleDrop, false);
+    
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        fileInput.files = files;
+        showFileInfo(files[0]);
+    }
+    
+    fileInput.addEventListener('change', function() {
+        if (this.files.length > 0) {
+            showFileInfo(this.files[0]);
+        }
+    });
+    
+    function showFileInfo(file) {
+        const fileInfo = document.getElementById('fileInfo');
+        fileInfo.innerHTML = `
+            <strong>Selected:</strong> ${file.name}<br>
+            <strong>Size:</strong> ${formatBytes(file.size)}<br>
+            <strong>Type:</strong> ${file.type}
+        `;
+        fileInfo.style.display = 'block';
+    }
+    
+    uploadForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(uploadForm);
+        formData.set('grayscale', document.getElementById('grayscale').checked);
+        
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('results').style.display = 'none';
+        
+        try {
+            const response = await fetch('/compress_video', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.error) {
+                alert('Error: ' + data.error);
+            } else {
+                displayResults(data);
+            }
+        } catch (error) {
+            alert('Error: ' + error.message);
+        } finally {
+            document.getElementById('loading').style.display = 'none';
+        }
+    });
+    
+    function resetForm() {
+        uploadForm.reset();
+        document.getElementById('fileInfo').style.display = 'none';
+        document.getElementById('results').style.display = 'none';
+        document.querySelectorAll('.algo-option').forEach((opt, i) => {
+            opt.classList.toggle('selected', i === 0);
+        });
+    }
+</script>
+"""
+
+DOCUMENT_PAGE = """
+<div class="container">
+    <div class="header">
+        <h1>📄 Document Compression</h1>
+        <p>Compress TXT, PDF, DOCX, CSV documents</p>
+    </div>
+    
+    <div class="content">
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="upload-area" id="dropArea">
+                <div class="upload-icon">📤</div>
+                <h3>Drop your document here or click to browse</h3>
+                <p style="color: #666; margin-top: 10px;">Supported formats: TXT, PDF, DOCX, CSV</p>
+                <input type="file" id="fileInput" name="file" class="file-input" accept=".txt,.pdf,.docx,.csv" required>
+                <button type="button" class="btn" onclick="document.getElementById('fileInput').click()">
+                    Choose Document
+                </button>
+                <div id="fileInfo" style="margin-top: 15px; display: none;"></div>
+            </div>
+            
+            <div class="options">
+                <div class="option-group">
+                    <label>Select Compression Algorithm</label>
+                    <input type="hidden" id="algorithm" name="algorithm" value="all">
+                    <div class="algorithm-grid">
+                        <div class="algo-option selected" onclick="selectAlgorithm('all')">
+                            <input type="radio" name="algo_radio" value="all" checked> All
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('rle')">
+                            <input type="radio" name="algo_radio" value="rle"> RLE
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('huffman')">
+                            <input type="radio" name="algo_radio" value="huffman"> Huffman
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('lzw')">
+                            <input type="radio" name="algo_radio" value="lzw"> LZW
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="text-align: center;">
+                <button type="submit" class="btn">🗜️ Compress Document</button>
+                <button type="button" class="btn btn-secondary" onclick="resetForm()">🗑️ Clear</button>
+            </div>
+        </form>
+        
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Processing document...</p>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+</div>
+
+<script>
+    const dropArea = document.getElementById('dropArea');
+    const fileInput = document.getElementById('fileInput');
+    const uploadForm = document.getElementById('uploadForm');
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, preventDefaults, false);
+    });
+    
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+    
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.add('drag-over'), false);
+    });
+    
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, () => dropArea.classList.remove('drag-over'), false);
+    });
+    
+    dropArea.addEventListener('drop', handleDrop, false);
+    
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        fileInput.files = files;
+        showFileInfo(files[0]);
+    }
+    
+    fileInput.addEventListener('change', function() {
+        if (this.files.length > 0) {
+            showFileInfo(this.files[0]);
+        }
+    });
+    
+    function showFileInfo(file) {
+        const fileInfo = document.getElementById('fileInfo');
+        fileInfo.innerHTML = `
+            <strong>Selected:</strong> ${file.name}<br>
+            <strong>Size:</strong> ${formatBytes(file.size)}<br>
+            <strong>Type:</strong> ${file.type}
+        `;
+        fileInfo.style.display = 'block';
+    }
+    
+    uploadForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(uploadForm);
+        
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('results').style.display = 'none';
+        
+        try {
+            const response = await fetch('/compress_document', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.error) {
+                alert('Error: ' + data.error);
+            } else {
+                displayResults(data);
+            }
+        } catch (error) {
+            alert('Error: ' + error.message);
+        } finally {
+            document.getElementById('loading').style.display = 'none';
+        }
+    });
+    
+    function resetForm() {
+        uploadForm.reset();
+        document.getElementById('fileInfo').style.display = 'none';
+        document.getElementById('results').style.display = 'none';
+        document.querySelectorAll('.algo-option').forEach((opt, i) => {
+            opt.classList.toggle('selected', i === 0);
+        });
+    }
+</script>
+"""
+
+TEXT_PAGE = """
+<div class="container">
+    <div class="header">
+        <h1>📝 Text Compression</h1>
+        <p>Compress raw text directly</p>
+    </div>
+    
+    <div class="content">
+        <form id="textForm">
+            <div class="option-group">
+                <label>Enter or Paste Text</label>
+                <textarea id="textInput" name="text" rows="12" style="width: 100%; padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 14px;" placeholder="Type or paste your text here...
+
+Examples for testing:
+• Repetitive: AAAABBBBCCCCDDDD (repeat many times)
+• Natural: The quick brown fox jumps over the lazy dog...
+• Pattern: Lorem ipsum dolor sit amet..."></textarea>
+            </div>
+            
+            <div class="options">
+                <div class="option-group">
+                    <label>Select Compression Algorithm</label>
+                    <input type="hidden" id="algorithm" name="algorithm" value="all">
+                    <div class="algorithm-grid">
+                        <div class="algo-option selected" onclick="selectAlgorithm('all')">
+                            <input type="radio" name="algo_radio" value="all" checked> All
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('rle')">
+                            <input type="radio" name="algo_radio" value="rle"> RLE
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('huffman')">
+                            <input type="radio" name="algo_radio" value="huffman"> Huffman
+                        </div>
+                        <div class="algo-option" onclick="selectAlgorithm('lzw')">
+                            <input type="radio" name="algo_radio" value="lzw"> LZW
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="text-align: center;">
+                <button type="submit" class="btn">🗜️ Compress Text</button>
+                <button type="button" class="btn btn-secondary" onclick="loadSample()">📋 Load Sample</button>
+                <button type="button" class="btn btn-secondary" onclick="resetForm()">🗑️ Clear</button>
+            </div>
+        </form>
+        
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Compressing text...</p>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+</div>
+
+<script>
+    const textForm = document.getElementById('textForm');
+    
+    textForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const text = document.getElementById('textInput').value.trim();
+        const algorithm = document.getElementById('algorithm').value;
+        
+        if (!text) {
+            alert('Please enter some text to compress!');
+            return;
+        }
+        
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('results').style.display = 'none';
+        
+        try {
+            const response = await fetch('/compress_text', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ text, algorithm })
+            });
+            
+            const data = await response.json();
+            
+            if (data.error) {
+                alert('Error: ' + data.error);
+            } else {
+                displayResults(data);
+            }
+        } catch (error) {
+            alert('Error: ' + error.message);
+        } finally {
+            document.getElementById('loading').style.display = 'none';
+        }
+    });
+    
+    function loadSample() {
+        document.getElementById('textInput').value = 'AAAABBBBCCCCDDDDEEEEFFFFGGGG'.repeat(30) + 
+            '\\n\\nThe quick brown fox jumps over the lazy dog. '.repeat(20) +
+            '\\n\\nLorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(15);
+    }
+    
+    function resetForm() {
+        textForm.reset();
+        document.getElementById('results').style.display = 'none';
+        document.querySelectorAll('.algo-option').forEach((opt, i) => {
+            opt.classList.toggle('selected', i === 0);
+        });
+    }
+    
+    // Load sample on page load
+    window.addEventListener('load', () => {
+        loadSample();
+    });
+</script>
+"""
+
+def render_page(content, title, active_page='home'):
+    nav_active = {
+        'home_active': 'active' if active_page == 'home' else '',
+        'images_active': 'active' if active_page == 'images' else '',
+        'videos_active': 'active' if active_page == 'videos' else '',
+        'docs_active': 'active' if active_page == 'docs' else '',
+        'text_active': 'active' if active_page == 'text' else ''
+    }
+    
+    # Use Jinja2 templating instead of string format
+    html = HTML_BASE.replace('{title}', title)
+    html = html.replace('{content}', content)
+    html = html.replace('{home_active}', nav_active['home_active'])
+    html = html.replace('{images_active}', nav_active['images_active'])
+    html = html.replace('{videos_active}', nav_active['videos_active'])
+    html = html.replace('{docs_active}', nav_active['docs_active'])
+    html = html.replace('{text_active}', nav_active['text_active'])
+    
+    return html
+
+@app.route('/')
+def index():
+    return render_page(HOME_PAGE, 'Home', 'home')
+
+@app.route('/images')
+def images_page():
+    return render_page(IMAGE_PAGE, 'Image Compression', 'images')
+
+@app.route('/videos')
+def videos_page():
+    return render_page(VIDEO_PAGE, 'Video Compression', 'videos')
+
+@app.route('/documents')
+def documents_page():
+    return render_page(DOCUMENT_PAGE, 'Document Compression', 'docs')
+
+@app.route('/text')
+def text_page():
+    return render_page(TEXT_PAGE, 'Text Compression', 'text')
+
+def test_algorithm(name, compress_func, decompress_func, data_list, original_filename=None, is_rle=False, is_huffman=False, img_shape=None, img_mode=None):
+    """Test an algorithm and return results."""
+    start_time = time.time()
+    
+    if is_huffman:
+        compressed_data, codes = compress_func(data_list)
+        compression_time = time.time() - start_time
+        compressed_bytes = huffman.compress_to_bytes(data_list)
+    elif is_rle:
+        compressed_data = compress_func(data_list)
+        compression_time = time.time() - start_time
+        compressed_bytes = rle.compress_to_bytes(data_list)
+    else:
+        # LZW - skip the direct compress call, use compress_to_bytes directly
+        compression_time_start = time.time()
+        compressed_bytes = lzw.compress_to_bytes(data_list)
+        compression_time = time.time() - compression_time_start
+    
+    # Decompress
+    start_time = time.time()
+    if is_huffman:
+        decompressed_data = huffman.decompress_from_bytes(compressed_bytes)
+    elif is_rle:
+        decompressed_data = rle.decompress_from_bytes(compressed_bytes)
+    else:
+        decompressed_data = lzw.decompress_from_bytes(compressed_bytes)
+    decompression_time = time.time() - start_time
+    
+    # Save compressed file (as viewable image if shape is provided)
+    compressed_filename = None
+    binary_filename = None
+    if original_filename:
+        base_name = os.path.splitext(original_filename)[0]
+        original_ext = os.path.splitext(original_filename)[1].lower()
+        
+        # ALWAYS save the raw binary compressed data
+        binary_filename = f"{base_name}_{name.lower()}_compressed.bin"
+        binary_path = os.path.join(app.config['COMPRESSED_FOLDER'], binary_filename)
+        with open(binary_path, 'wb') as f:
+            f.write(compressed_bytes)
+        
+        if img_shape and img_mode:
+            # Save as same format as original for viewing
+            if original_ext not in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
+                original_ext = '.png'  # Default to PNG if unknown
+            
+            compressed_filename = f"{base_name}_{name.lower()}_decompressed{original_ext}"
+            compressed_path = os.path.join(app.config['COMPRESSED_FOLDER'], compressed_filename)
+            
+            # Reconstruct image from decompressed data
+            decompressed_array = np.array(list(decompressed_data), dtype=np.uint8).reshape(img_shape)
+            reconstructed_img = Image.fromarray(decompressed_array, mode=img_mode)
+            
+            # Save with same format
+            if original_ext in ['.jpg', '.jpeg']:
+                reconstructed_img.save(compressed_path, 'JPEG', quality=95)
+            elif original_ext == '.png':
+                reconstructed_img.save(compressed_path, 'PNG', optimize=True)
+            elif original_ext == '.bmp':
+                reconstructed_img.save(compressed_path, 'BMP')
+            elif original_ext == '.gif':
+                reconstructed_img.save(compressed_path, 'GIF')
+        else:
+            # For non-image data, binary file is the only output
+            compressed_filename = binary_filename
+    
+    # Calculate metrics
+    original_size = len(data_list)
+    compressed_size = len(compressed_bytes)
+    compression_ratio = compressed_size / original_size if original_size > 0 else 0
+    space_saving = ((original_size - compressed_size) / original_size * 100) if original_size > 0 else 0
+    
+    # Verify
+    verified = (list(decompressed_data) == list(data_list))
+    
+    result = {
+        'algorithm': name,
+        'original_size': original_size,
+        'compressed_size': compressed_size,
+        'compression_ratio': compression_ratio,
+        'space_saving': space_saving,
+        'compression_time': compression_time,
+        'decompression_time': decompression_time,
+        'verified': verified
+    }
+    
+    if compressed_filename:
+        result['download_file'] = compressed_filename
+    if binary_filename:
+        result['binary_file'] = binary_filename
+    
+    return result
+
+def generate_summary(results):
+    """Generate summary of best performers."""
+    if not results:
+        return None
+    
+    summary = {}
+    
+    # Best compression
+    best_comp = max(results, key=lambda x: x['space_saving'])
+    if best_comp['space_saving'] > 0:
+        summary['best_compression'] = {
+            'name': best_comp['algorithm'],
+            'saving': best_comp['space_saving']
+        }
+    
+    # Fastest compression
+    fastest_comp = min(results, key=lambda x: x['compression_time'])
+    summary['fastest_comp'] = {
+        'name': fastest_comp['algorithm'],
+        'time': fastest_comp['compression_time']
+    }
+    
+    return summary
+
+@app.route('/compress_image', methods=['POST'])
+def compress_image():
+    """Handle image compression."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded'})
+        
+        file = request.files['file']
+        algorithm = request.form.get('algorithm', 'all')
+        grayscale = request.form.get('grayscale', 'true').lower() == 'true'
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'})
+        
+        if not allowed_file(file.filename, ALLOWED_IMAGES):
+            return jsonify({'error': 'Invalid file type'})
+        
+        # Save uploaded file
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        try:
+            # Load image using PIL directly
+            img = Image.open(filepath)
+            original_img = img.copy()  # Keep original for saving
+            grayscale_file = None
+            original_saved_file = None
+            
+            # Save original image for comparison
+            base_name = os.path.splitext(filename)[0]
+            original_saved_filename = f"{base_name}_original.png"
+            original_saved_path = os.path.join(app.config['COMPRESSED_FOLDER'], original_saved_filename)
+            original_img.save(original_saved_path, 'PNG')
+            original_saved_file = original_saved_filename
+            
+            if grayscale:
+                img = img.convert('L')
+                # Save grayscale image
+                grayscale_filename = f"{base_name}_grayscale.png"
+                grayscale_path = os.path.join(app.config['COMPRESSED_FOLDER'], grayscale_filename)
+                img.save(grayscale_path)
+                grayscale_file = grayscale_filename
+            
+            img_array = np.array(img)
+            data_list = img_array.flatten().tolist()
+            img_shape = img_array.shape
+            img_mode = img.mode
+            
+            # Run compression
+            results = []
+            
+            if algorithm in ['all', 'rle']:
+                result = test_algorithm('RLE', rle.compress, rle.decompress, data_list, filename, is_rle=True, img_shape=img_shape, img_mode=img_mode)
+                results.append(result)
+            
+            if algorithm in ['all', 'huffman']:
+                result = test_algorithm('Huffman', huffman.compress, huffman.decompress, data_list, filename, is_huffman=True, img_shape=img_shape, img_mode=img_mode)
+                results.append(result)
+            
+            if algorithm in ['all', 'lzw']:
+                result = test_algorithm('LZW', lzw.compress, lzw.decompress, data_list, filename, img_shape=img_shape, img_mode=img_mode)
+                results.append(result)
+            
+            summary = generate_summary(results)
+            
+            response_data = {
+                'results': results,
+                'summary': summary,
+                'filename': filename,
+                'file_type': f'Image ({img.mode}, {img.size[0]}x{img.size[1]})',
+                'original_file': original_saved_file
+            }
+            
+            if grayscale_file:
+                response_data['grayscale_file'] = grayscale_file
+            
+            return jsonify(response_data)
+            
+        finally:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        
+    except Exception as e:
+        import traceback
+        return jsonify({'error': f'{str(e)}\n{traceback.format_exc()}'})
+
+@app.route('/compress_video', methods=['POST'])
+def compress_video():
+    """Handle video compression."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded'})
+        
+        file = request.files['file']
+        algorithm = request.form.get('algorithm', 'all')
+        grayscale = request.form.get('grayscale', 'true').lower() == 'true'
+        max_frames = int(request.form.get('max_frames', 10))
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'})
+        
+        if not allowed_file(file.filename, ALLOWED_VIDEOS):
+            return jsonify({'error': 'Invalid file type'})
+        
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        try:
+            frames = video_handler.load_video(filepath, max_frames=max_frames)
+            data_list = video_handler.prepare_for_compression(frames, grayscale=grayscale)
+            
+            results = []
+            
+            if algorithm in ['all', 'rle']:
+                result = test_algorithm('RLE', rle.compress, rle.decompress, data_list, filename, is_rle=True)
+                results.append(result)
+            
+            if algorithm in ['all', 'huffman']:
+                result = test_algorithm('Huffman', huffman.compress, huffman.decompress, data_list, filename, is_huffman=True)
+                results.append(result)
+            
+            if algorithm in ['all', 'lzw']:
+                result = test_algorithm('LZW', lzw.compress, lzw.decompress, data_list, filename)
+                results.append(result)
+            
+            summary = generate_summary(results)
+            
+            return jsonify({
+                'results': results,
+                'summary': summary,
+                'filename': filename,
+                'file_type': f'Video ({len(frames)} frames processed)'
+            })
+            
+        finally:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        
+    except Exception as e:
+        import traceback
+        return jsonify({'error': f'{str(e)}\n{traceback.format_exc()}'})
+
+@app.route('/compress_document', methods=['POST'])
+def compress_document():
+    """Handle document compression."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded'})
+        
+        file = request.files['file']
+        algorithm = request.form.get('algorithm', 'all')
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'})
+        
+        if not allowed_file(file.filename, ALLOWED_DOCS):
+            return jsonify({'error': 'Invalid file type'})
+        
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        try:
+            ext = os.path.splitext(filename)[1].lower()
+            
+            if ext == '.txt' or ext == '.csv':
+                text = document_handler.load_text_file(filepath)
+            elif ext == '.pdf':
+                text = document_handler.load_pdf(filepath)
+            elif ext == '.docx':
+                text = document_handler.load_docx(filepath)
+            else:
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+            
+            data_list = [ord(c) for c in text]
+            
+            results = []
+            
+            if algorithm in ['all', 'rle']:
+                result = test_algorithm('RLE', rle.compress, rle.decompress, data_list, filename, is_rle=True)
+                results.append(result)
+            
+            if algorithm in ['all', 'huffman']:
+                result = test_algorithm('Huffman', huffman.compress, huffman.decompress, data_list, filename, is_huffman=True)
+                results.append(result)
+            
+            if algorithm in ['all', 'lzw']:
+                result = test_algorithm('LZW', lzw.compress, lzw.decompress, data_list, filename)
+                results.append(result)
+            
+            summary = generate_summary(results)
+            
+            return jsonify({
+                'results': results,
+                'summary': summary,
+                'filename': filename,
+                'file_type': f'Document ({ext.upper()}, {len(text)} characters)'
+            })
+            
+        finally:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        
+    except Exception as e:
+        import traceback
+        return jsonify({'error': f'{str(e)}\n{traceback.format_exc()}'})
+
+@app.route('/compress_text', methods=['POST'])
+def compress_text():
+    """Handle text compression."""
+    try:
+        data = request.json
+        text = data.get('text', '')
+        algorithm = data.get('algorithm', 'all')
+        
+        if not text:
+            return jsonify({'error': 'No text provided'})
+        
+        data_list = [ord(c) for c in text]
+        results = []
+        
+        # Use a default filename for text compression
+        text_filename = f"text_input_{int(time.time())}.txt"
+        
+        if algorithm in ['all', 'rle']:
+            result = test_algorithm('RLE', rle.compress, rle.decompress, data_list, text_filename, is_rle=True)
+            results.append(result)
+        
+        if algorithm in ['all', 'huffman']:
+            result = test_algorithm('Huffman', huffman.compress, huffman.decompress, data_list, text_filename, is_huffman=True)
+            results.append(result)
+        
+        if algorithm in ['all', 'lzw']:
+            result = test_algorithm('LZW', lzw.compress, lzw.decompress, data_list, text_filename)
+            results.append(result)
+        
+        summary = generate_summary(results)
+        
+        return jsonify({
+            'results': results,
+            'summary': summary,
+            'file_type': f'Text ({len(text)} characters)'
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({'error': f'{str(e)}\n{traceback.format_exc()}'})
+
+@app.route('/download/<filename>')
+def download_file(filename):
+    """Download compressed file."""
+    try:
+        filepath = os.path.join(app.config['COMPRESSED_FOLDER'], filename)
+        if os.path.exists(filepath):
+            return send_file(filepath, as_attachment=True, download_name=filename)
+        else:
+            return jsonify({'error': 'File not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    print("\n" + "="*60)
+    print("  🌐 Data Compression Project - Multi-Page Interface")
+    print("="*60)
+    print("\n📱 Starting web server...")
+    print("🌍 Open your browser and go to: http://localhost:8080")
+    print("\n📂 Available pages:")
+    print("   • http://localhost:8080/images - Image Compression")
+    print("   • http://localhost:8080/videos - Video Compression")
+    print("   • http://localhost:8080/documents - Document Compression")
+    print("   • http://localhost:8080/text - Text Compression")
+    print("\n⏹️  Press CTRL+C to stop the server\n")
+    
+    app.run(debug=True, host='0.0.0.0', port=8080)
