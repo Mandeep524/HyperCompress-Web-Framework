@@ -1,0 +1,20 @@
+This is a sample text file for testing compression algorithms.
+
+It contains multiple lines of text with varying content:
+- Repeated characters: AAAAAAAAAA BBBBBBBBBB CCCCCCCCCC
+- Normal sentences with mixed content
+- Numbers: 1234567890 1234567890 1234567890
+- Special characters: !@#$%^&*() !@#$%^&*()
+
+The quick brown fox jumps over the lazy dog.
+The quick brown fox jumps over the lazy dog.
+The quick brown fox jumps over the lazy dog.
+
+This text is designed to test different compression scenarios:
+1. Repetitive patterns (good for RLE)
+2. Frequency variations (good for Huffman)
+3. Dictionary patterns (good for LZW)
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
